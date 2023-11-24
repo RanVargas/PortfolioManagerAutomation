@@ -1,14 +1,22 @@
-import Octokit from 'octokit';
+import { Octokit, App } from "octokit";
 import dotenv from 'dotenv';
 import { Stream } from 'stream';
 import fetch from 'node-fetch';
+import {get} from 'https';
+import { Upload } from "@aws-sdk/lib-storage";
+import { S3Client, ListObjectsV2Command, DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+
 
 
 export const handler = async (event) => {
   dotenv.config();
 
   const BUCKET_NAME = "project-caching";
-
+  const username = "RanVargas";
+  const octokit = new Octokit({
+    auth: process.env.OVERLORDTOKEN
+  });
+  const s3 = new S3Client({region: 'us-east-2',})
   async function getText(url) {
     // Fetch request
     const response = await fetch(url);
@@ -27,15 +35,16 @@ export const handler = async (event) => {
     projectName,
     projectAsset
   ) {
-    const AWS = require("aws-sdk");
-    const s3 = new AWS.S3();
-    const https = require("https");
+    console.log("this was called");
+    //const AWS = require("aws-sdk");
+    
+    //const https = require("https");
     const url = downloadUrl;
     const bucket = bucketName;
-    const key = `${projectName}/${projectAsset}`;
+    const key = `${projectName}/${projectName}-${projectAsset}`;
 
     return new Promise((resolve, reject) => {
-      https.get(url, (res) => {
+      get(url, async (res) => {
         // Get data stream from response
         const streamer = Stream.PassThrough();
         const stream = res.pipe(streamer);
@@ -44,49 +53,42 @@ export const handler = async (event) => {
           Key: key,
           Body: stream,
         };
-        // Upload stream to S3
-
-        s3.upload(params, (err, data) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(data);
-          }
+        const parallelUpload = new Upload({
+          client: s3,
+          params: params
         });
+
+        try {
+          await parallelUpload.done();          
+        } catch (error) {
+          
+        }
+        console.log("this triggered");
+        
       });
     });
   }
 
   async function emptyBucket(bucket) {
-    const AWS = require("aws-sdk");
-    const s3 = new AWS.S3();
-
-    let listParams = {
-      Bucket: bucket,
-    };
-
     let listedObjects;
 
-    do {
-      listedObjects = await s3.listObjectsV2(listParams).promise();
-
-      if (listedObjects.Contents.length === 0) return;
-
-      let deleteParams = {
-        Bucket: bucket,
-        Delete: { Objects: [] },
-      };
+      const listObjectsV2 = new ListObjectsV2Command({
+        Bucket: bucket
+      });
+      listedObjects = await s3.send(listObjectsV2);
+      
+      if (listedObjects.Contents == undefined) return;
 
       listedObjects.Contents.forEach(({ Key }) => {
-        deleteParams.Delete.Objects.push({ Key });
+        const deleter = new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: Key
+        });
+        try {
+          s3.send(deleter);
+        } catch (error) {
+        }
       });
-
-      await s3.deleteObjects(deleteParams).promise();
-
-      if (listedObjects.IsTruncated) {
-        listParams.ContinuationToken = listedObjects.NextContinuationToken;
-      }
-    } while (listedObjects.IsTruncated);
   }
 
   async function getAllGithubAssetsLinks(repoName) {
@@ -104,14 +106,9 @@ export const handler = async (event) => {
 
     return values;
   }
-
-  const username = "RanVargas";
-  const octokit = new Octokit({
-    auth: process.env.OVERLORDTOKEN,
-  });
+  
 
   let reposReadmeOjb = {};
-  let reposReadmeContent = [];
   let reposData = await octokit.request("GET /users/{username}/repos", {
     username: "RanVargas",
     headers: {
@@ -192,4 +189,9 @@ export const handler = async (event) => {
   return response;
 };
 
+handler({}).finally(
+  (response) => {
+    console.log(response);
+  }
+)
 // Runs every cron(0 1 ? * SUN *)
